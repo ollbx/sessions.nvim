@@ -13,6 +13,13 @@ local config = {
     -- treat the default session filepath as an absolute path
     -- if true, all session files will be stored in a single directory
     absolute = false,
+
+    hooks = {
+        load = {},
+        load_pre = {},
+        save = {},
+        save_pre = {},
+    }
 }
 
 local M = {}
@@ -67,12 +74,55 @@ local get_session_path = function(path, ensure)
     return nil
 end
 
+---@param hook function|string
+---@param event string|nil
+---@param path string|nil
+local run_hook = function(hook, event, path)
+    if type(hook) == "function" then
+        if hook(event, path) == false then
+            return false
+        end
+    elseif type(hook) == "string" then
+        vim.cmd(hook)
+    else
+        vim.notify(string.format("sessions.nvim: invalid hook '%s'", hook), levels.ERROR)
+    end
+
+    return true
+end
+
+---given a list of hooks, execute each in the order given
+---@param hooks table|function|string
+---@param event string|nil
+---@param path string|nil
+local run_hooks = function(hooks, event, path)
+    if not hooks then
+        return
+    end
+
+    if type(hooks) == "table" then
+        for _, hook in ipairs(hooks) do
+            if run_hook(hook, event, path) == false then
+                return false
+            end
+        end
+    else
+        if run_hook(hooks, event, path) == false then
+            return false
+        end
+    end
+
+    return true
+end
+
 -- set to nil when no session recording is active
 local session_file_path = nil
 
-local write_session_file = function(path)
+local write_session_file = function(event, path)
     local target_path = path or session_file_path
+    run_hooks(config.hooks.save_pre, event, target_path)
     vim.cmd(string.format("mksession! %s", target_path))
+    run_hooks(config.hooks.save, event, target_path)
 end
 
 local start_autosave_internal = function(path)
@@ -82,7 +132,9 @@ local start_autosave_internal = function(path)
         {
             group = augroup,
             pattern = "*",
-            callback = function() write_session_file() end,
+            callback = function(event)
+               write_session_file(event.event)
+            end,
         }
     )
 
@@ -108,7 +160,7 @@ M.stop_autosave = function(opts)
 
     -- save before stopping
     if opts.save then
-        write_session_file()
+        write_session_file("StopAutoSave")
     end
 
     session_file_path = nil
@@ -132,7 +184,7 @@ M.save = function(path, opts)
         start_autosave_internal(path)
     end
 
-    write_session_file(path)
+    write_session_file("Save", path)
 end
 
 ---load a session file from the given path
@@ -153,7 +205,9 @@ M.load = function(path, opts)
         return false
     end
 
+    run_hooks(config.hooks.load_pre, "Load", path)
     vim.cmd(string.format("silent! source %s", path))
+    run_hooks(config.hooks.load, "Load", path)
 
     if opts.autosave then
         start_autosave_internal(path)
